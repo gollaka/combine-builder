@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -30,6 +30,13 @@ interface Combo {
   totalCote: number;
 }
 
+type SortOrder = "asc" | "desc";
+
+// Predicted outcome per match: null = no filter for that match
+type Predictions = Record<number, string | null>;
+
+const PAGE_SIZE = 20;
+
 // ─── Pure helper ─────────────────────────────────────────────────────────────
 
 function generateAllCombos(matches: Match[]): Combo[] {
@@ -58,12 +65,10 @@ function generateAllCombos(matches: Match[]): Combo[] {
     [[]]
   );
 
-  return product
-    .map((sels) => ({
-      sels,
-      totalCote: sels.reduce((prod, s) => prod * s.cote, 1),
-    }))
-    .sort((a, b) => a.totalCote - b.totalCote);
+  return product.map((sels) => ({
+    sels,
+    totalCote: sels.reduce((prod, s) => prod * s.cote, 1),
+  }));
 }
 
 // ─── Chip ─────────────────────────────────────────────────────────────────────
@@ -147,6 +152,57 @@ const S = {
 
 // ─── Step 1 — Matches ─────────────────────────────────────────────────────────
 
+const BULK_PLACEHOLDER = `Collez vos matchs, un par ligne :
+PSG - Bayern : 2.40 3.50 2.80
+France - Brésil : 2.10 3.20 3.50
+Real - Barça : 1.80 3.40 4.10`;
+
+function parseBulkMatches(text: string): Match[] {
+  return text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line, i) => {
+      // formats: "Team1 - Team2 : 1.5 3.2 2.8" or "Team1 - Team2 1.5 3.2 2.8"
+      const colonSplit = line.split(":");
+      let teamsPart: string;
+      let oddsPart: string;
+      if (colonSplit.length >= 2) {
+        teamsPart = colonSplit[0].trim();
+        oddsPart = colonSplit.slice(1).join(":").trim();
+      } else {
+        // try to find 3 numbers at the end
+        const nums = line.match(/[\d.]+/g);
+        if (nums && nums.length >= 3) {
+          const lastThree = nums.slice(-3);
+          const lastIdx = line.lastIndexOf(lastThree[0]);
+          teamsPart = line.slice(0, lastIdx).trim();
+          oddsPart = lastThree.join(" ");
+        } else {
+          teamsPart = line;
+          oddsPart = "";
+        }
+      }
+
+      const teams = teamsPart
+        .split(/\s*[-–vs]+\s*/i)
+        .map((t) => t.trim())
+        .filter(Boolean);
+      const oddsNums = oddsPart.match(/[\d.]+/g) ?? [];
+
+      return {
+        id: Date.now() + i,
+        home: teams[0] ?? "",
+        away: teams[1] ?? "",
+        odds: [
+          { label: "1", value: oddsNums[0] ?? "", active: true },
+          { label: "N", value: oddsNums[1] ?? "", active: true },
+          { label: "2", value: oddsNums[2] ?? "", active: true },
+        ],
+      };
+    });
+}
+
 function StepMatches({
   matches,
   setMatches,
@@ -154,6 +210,9 @@ function StepMatches({
   matches: Match[];
   setMatches: React.Dispatch<React.SetStateAction<Match[]>>;
 }) {
+  const [bulkMode, setBulkMode] = useState(false);
+  const [bulkText, setBulkText] = useState("");
+
   const add = () =>
     setMatches((prev) => [
       ...prev,
@@ -196,8 +255,79 @@ function StepMatches({
       )
     );
 
+  const importBulk = () => {
+    const parsed = parseBulkMatches(bulkText);
+    if (parsed.length > 0) {
+      setMatches((prev) => [...prev, ...parsed]);
+      setBulkText("");
+      setBulkMode(false);
+    }
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      {/* Bulk import toggle */}
+      <div style={{ display: "flex", gap: 8 }}>
+        <button
+          onClick={() => setBulkMode(!bulkMode)}
+          style={{
+            ...S.btnSecondary,
+            flex: 1,
+            background: bulkMode ? "#3b82f6" : "#334155",
+          }}
+        >
+          {bulkMode ? "✕ Fermer import rapide" : "⚡ Import rapide (coller plusieurs matchs)"}
+        </button>
+      </div>
+
+      {/* Bulk import area */}
+      {bulkMode && (
+        <div style={S.card}>
+          <div
+            style={{
+              color: "#94a3b8",
+              fontSize: 12,
+              marginBottom: 8,
+              lineHeight: 1.5,
+            }}
+          >
+            Format : <strong>Équipe1 - Équipe2 : cote1 coteN cote2</strong>
+          </div>
+          <textarea
+            placeholder={BULK_PLACEHOLDER}
+            value={bulkText}
+            onChange={(e) => setBulkText(e.target.value)}
+            style={{
+              ...S.input,
+              minHeight: 120,
+              resize: "vertical",
+              fontFamily: "monospace",
+              fontSize: 13,
+              lineHeight: 1.6,
+            }}
+          />
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <button onClick={importBulk} style={S.btnPrimary}>
+              Importer {parseBulkMatches(bulkText).length || ""} match
+              {parseBulkMatches(bulkText).length !== 1 ? "s" : ""}
+            </button>
+            <button
+              onClick={() => {
+                const parsed = parseBulkMatches(bulkText);
+                if (parsed.length > 0) {
+                  setMatches(parsed);
+                  setBulkText("");
+                  setBulkMode(false);
+                }
+              }}
+              style={S.btnSecondary}
+            >
+              Remplacer tout
+            </button>
+          </div>
+        </div>
+      )}
+
       {matches.map((m, idx) => (
         <div key={m.id} style={S.card}>
           {/* Header */}
@@ -361,40 +491,99 @@ function StepSelect({
   combos,
   selected,
   setSelected,
+  matches,
 }: {
   combos: Combo[];
   selected: number[];
   setSelected: React.Dispatch<React.SetStateAction<number[]>>;
+  matches: Match[];
 }) {
   const [minCote, setMinCote] = useState("");
   const [maxCote, setMaxCote] = useState("");
   const [nbMatchs, setNbMatchs] = useState("");
+  const [sortOrder, setSortOrder] = useState<SortOrder>("asc");
+  const [predictions, setPredictions] = useState<Predictions>({});
+  const [page, setPage] = useState(0);
 
-  const filtered = useMemo(
+  // Valid matches (same as in generateAllCombos)
+  const validMatches = useMemo(
     () =>
-      combos
-        .map((c, i) => ({ ...c, idx: i }))
-        .filter((c) => {
-          if (minCote && c.totalCote < parseFloat(minCote)) return false;
-          if (maxCote && c.totalCote > parseFloat(maxCote)) return false;
-          if (nbMatchs && c.sels.length !== parseInt(nbMatchs, 10)) return false;
-          return true;
-        }),
-    [combos, minCote, maxCote, nbMatchs]
+      matches.filter(
+        (m) =>
+          m.home.trim() &&
+          m.away.trim() &&
+          m.odds.some((o) => o.active && parseFloat(o.value) > 1)
+      ),
+    [matches]
   );
 
-  const allChecked =
-    filtered.length > 0 && filtered.every((c) => selected.includes(c.idx));
+  const togglePrediction = useCallback(
+    (matchId: number, label: string) => {
+      setPredictions((prev) => ({
+        ...prev,
+        [matchId]: prev[matchId] === label ? null : label,
+      }));
+      setPage(0);
+    },
+    []
+  );
 
-  const toggleAll = () => {
-    if (allChecked) {
-      const set = new Set(filtered.map((c) => c.idx));
+  const filtered = useMemo(() => {
+    const result = combos
+      .map((c, i) => ({ ...c, idx: i }))
+      .filter((c) => {
+        if (minCote && c.totalCote < parseFloat(minCote)) return false;
+        if (maxCote && c.totalCote > parseFloat(maxCote)) return false;
+        if (nbMatchs && c.sels.length !== parseInt(nbMatchs, 10)) return false;
+        // prediction filter: for each match with a prediction, the combo must include that label
+        for (const [matchIdStr, label] of Object.entries(predictions)) {
+          if (!label) continue;
+          const matchId = parseInt(matchIdStr, 10);
+          const sel = c.sels.find((s) => s.matchId === matchId);
+          if (sel && sel.label !== label) return false;
+        }
+        return true;
+      });
+
+    result.sort((a, b) =>
+      sortOrder === "asc"
+        ? a.totalCote - b.totalCote
+        : b.totalCote - a.totalCote
+    );
+
+    return result;
+  }, [combos, minCote, maxCote, nbMatchs, predictions, sortOrder]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages - 1);
+  const pageItems = filtered.slice(
+    safePage * PAGE_SIZE,
+    (safePage + 1) * PAGE_SIZE
+  );
+
+  const allPageChecked =
+    pageItems.length > 0 && pageItems.every((c) => selected.includes(c.idx));
+
+  const toggleAllPage = () => {
+    if (allPageChecked) {
+      const set = new Set(pageItems.map((c) => c.idx));
       setSelected((prev) => prev.filter((i) => !set.has(i)));
     } else {
       setSelected((prev) => [
-        ...new Set([...prev, ...filtered.map((c) => c.idx)]),
+        ...new Set([...prev, ...pageItems.map((c) => c.idx)]),
       ]);
     }
+  };
+
+  const selectAllFiltered = () => {
+    setSelected((prev) => [
+      ...new Set([...prev, ...filtered.map((c) => c.idx)]),
+    ]);
+  };
+
+  const deselectAllFiltered = () => {
+    const set = new Set(filtered.map((c) => c.idx));
+    setSelected((prev) => prev.filter((i) => !set.has(i)));
   };
 
   const toggle = (idx: number) =>
@@ -402,9 +591,114 @@ function StepSelect({
       prev.includes(idx) ? prev.filter((i) => i !== idx) : [...prev, idx]
     );
 
+  const activePredictionCount = Object.values(predictions).filter(Boolean).length;
+
   return (
     <div>
-      {/* Filters */}
+      {/* ── Prediction filter ─────────────────────────────── */}
+      {validMatches.length > 0 && (
+        <div
+          style={{
+            ...S.card,
+            marginBottom: 14,
+          }}
+        >
+          <div
+            style={{
+              color: "#3b82f6",
+              fontWeight: 700,
+              fontSize: 11,
+              textTransform: "uppercase",
+              letterSpacing: 1.2,
+              marginBottom: 10,
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+            }}
+          >
+            <span>🎯 Pronostics ({activePredictionCount}/{validMatches.length})</span>
+            {activePredictionCount > 0 && (
+              <button
+                onClick={() => { setPredictions({}); setPage(0); }}
+                style={{
+                  ...S.btnSecondary,
+                  padding: "3px 10px",
+                  fontSize: 11,
+                }}
+              >
+                Réinitialiser
+              </button>
+            )}
+          </div>
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+            }}
+          >
+            {validMatches.map((m) => (
+              <div
+                key={m.id}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                }}
+              >
+                <span
+                  style={{
+                    color: "#94a3b8",
+                    fontSize: 12,
+                    flex: 1,
+                    minWidth: 0,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {m.home} – {m.away}
+                </span>
+                <div style={{ display: "flex", gap: 4 }}>
+                  {m.odds
+                    .filter((o) => o.active && parseFloat(o.value) > 1)
+                    .map((odd) => {
+                      const active = predictions[m.id] === odd.label;
+                      return (
+                        <button
+                          key={odd.label}
+                          onClick={() => togglePrediction(m.id, odd.label)}
+                          style={{
+                            background: active
+                              ? (CHIP_BG[odd.label] ?? "#6b7280")
+                              : "#0f172a",
+                            border: `1px solid ${
+                              active
+                                ? CHIP_BG[odd.label] ?? "#6b7280"
+                                : "#334155"
+                            }`,
+                            borderRadius: 6,
+                            color: active ? "#fff" : "#64748b",
+                            cursor: "pointer",
+                            fontSize: 12,
+                            fontWeight: 700,
+                            padding: "3px 10px",
+                            transition:
+                              "background 0.15s, border-color 0.15s, color 0.15s",
+                          }}
+                        >
+                          {odd.label}
+                        </button>
+                      );
+                    })}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Filters & sort ────────────────────────────────── */}
       <div
         style={{
           display: "flex",
@@ -418,34 +712,60 @@ function StepSelect({
           type="number"
           placeholder="Cote min"
           value={minCote}
-          onChange={(e) => setMinCote(e.target.value)}
+          onChange={(e) => { setMinCote(e.target.value); setPage(0); }}
           style={{ ...S.input, width: 100 }}
         />
         <input
           type="number"
           placeholder="Cote max"
           value={maxCote}
-          onChange={(e) => setMaxCote(e.target.value)}
+          onChange={(e) => { setMaxCote(e.target.value); setPage(0); }}
           style={{ ...S.input, width: 100 }}
         />
         <input
           type="number"
           placeholder="Nb matchs"
           value={nbMatchs}
-          onChange={(e) => setNbMatchs(e.target.value)}
+          onChange={(e) => { setNbMatchs(e.target.value); setPage(0); }}
           style={{ ...S.input, width: 110 }}
         />
-        <button onClick={toggleAll} style={S.btnSecondary}>
-          {allChecked ? "Tout décocher" : "Tout cocher"}
+        <button
+          onClick={() => setSortOrder((o) => (o === "asc" ? "desc" : "asc"))}
+          style={S.btnSecondary}
+          title={sortOrder === "asc" ? "Cote croissante" : "Cote décroissante"}
+        >
+          Cote {sortOrder === "asc" ? "↑" : "↓"}
+        </button>
+        <button onClick={toggleAllPage} style={S.btnSecondary}>
+          {allPageChecked ? "Décocher page" : "Cocher page"}
         </button>
         <span style={{ color: "#64748b", fontSize: 13 }}>
           {filtered.length} ligne{filtered.length !== 1 ? "s" : ""}
+          {selected.length > 0 && ` · ${selected.length} sélectionné${selected.length !== 1 ? "s" : ""}`}
         </span>
       </div>
 
-      {/* List */}
+      {/* ── Select all / deselect all filtered ── */}
+      {filtered.length > PAGE_SIZE && (
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            marginBottom: 10,
+          }}
+        >
+          <button onClick={selectAllFiltered} style={{ ...S.btnSecondary, fontSize: 12, padding: "6px 12px" }}>
+            Tout cocher ({filtered.length})
+          </button>
+          <button onClick={deselectAllFiltered} style={{ ...S.btnSecondary, fontSize: 12, padding: "6px 12px" }}>
+            Tout décocher ({filtered.length})
+          </button>
+        </div>
+      )}
+
+      {/* ── List ──────────────────────────────────────────── */}
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        {filtered.length === 0 && (
+        {pageItems.length === 0 && (
           <div
             style={{
               color: "#475569",
@@ -458,7 +778,7 @@ function StepSelect({
           </div>
         )}
 
-        {filtered.map((combo) => {
+        {pageItems.map((combo) => {
           const isSelected = selected.includes(combo.idx);
           return (
             <div
@@ -531,6 +851,75 @@ function StepSelect({
           );
         })}
       </div>
+
+      {/* ── Pagination ────────────────────────────────────── */}
+      {totalPages > 1 && (
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "center",
+            alignItems: "center",
+            gap: 6,
+            marginTop: 14,
+          }}
+        >
+          <button
+            disabled={safePage === 0}
+            onClick={() => setPage(0)}
+            style={{
+              ...S.btnSecondary,
+              padding: "6px 10px",
+              fontSize: 12,
+              opacity: safePage === 0 ? 0.4 : 1,
+              cursor: safePage === 0 ? "not-allowed" : "pointer",
+            }}
+          >
+            «
+          </button>
+          <button
+            disabled={safePage === 0}
+            onClick={() => setPage((p) => Math.max(0, p - 1))}
+            style={{
+              ...S.btnSecondary,
+              padding: "6px 10px",
+              fontSize: 12,
+              opacity: safePage === 0 ? 0.4 : 1,
+              cursor: safePage === 0 ? "not-allowed" : "pointer",
+            }}
+          >
+            ‹
+          </button>
+          <span style={{ color: "#94a3b8", fontSize: 13, padding: "0 8px" }}>
+            Page {safePage + 1} / {totalPages}
+          </span>
+          <button
+            disabled={safePage >= totalPages - 1}
+            onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+            style={{
+              ...S.btnSecondary,
+              padding: "6px 10px",
+              fontSize: 12,
+              opacity: safePage >= totalPages - 1 ? 0.4 : 1,
+              cursor: safePage >= totalPages - 1 ? "not-allowed" : "pointer",
+            }}
+          >
+            ›
+          </button>
+          <button
+            disabled={safePage >= totalPages - 1}
+            onClick={() => setPage(totalPages - 1)}
+            style={{
+              ...S.btnSecondary,
+              padding: "6px 10px",
+              fontSize: 12,
+              opacity: safePage >= totalPages - 1 ? 0.4 : 1,
+              cursor: safePage >= totalPages - 1 ? "not-allowed" : "pointer",
+            }}
+          >
+            »
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -905,6 +1294,7 @@ export default function CombineGenerator() {
             combos={combos}
             selected={selected}
             setSelected={setSelected}
+            matches={matches}
           />
         )}
         {step === 2 && <StepRecap combos={combos} selected={selected} />}
